@@ -6,14 +6,12 @@ import Browser
 import Html
 import Process
 import Task
-import Update3
 import Element exposing (Element)
 import Element.Input as Input
 
 
 type Model
     = Error String
-    | Restoring InitializedModel
     | Initialized InitializedModel
 
 
@@ -89,32 +87,32 @@ init _ =
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update action model =
+update msg model =
     case model of
         Error _ ->
             ( model, Cmd.none )
 
-        Restoring initModel ->
-            updateInitialized action initModel
-                |> Tuple.mapFirst Initialized
-
         Initialized initModel ->
-            updateInitialized action initModel
+            updateInitialized msg initModel
                 |> Tuple.mapFirst Initialized
 
 
 updateInitialized : Msg -> InitializedModel -> ( InitializedModel, Cmd Msg )
-updateInitialized action model =
-    case Debug.log "msg" action of
-        AuthMsg msg ->
-            Update3.lift .auth (\x m -> { m | auth = x }) AuthMsg Auth.api.update msg model
-                |> Update3.evalMaybe (\status -> \nextModel -> ( { nextModel | session = status }, Cmd.none )) Cmd.none
+updateInitialized msg model = case msg of
+        AuthMsg submsg ->
+            let (newAuth, cmd, newSession) = Auth.api.update submsg model.auth
+            in ({ model |
+                    auth = newAuth,
+                    session = Maybe.withDefault model.session newSession},
+                Cmd.map AuthMsg cmd)
 
         InitialTimeout ->
             ( model, Auth.api.refresh |> Cmd.map AuthMsg )
 
         LogIn ->
-            ( model, Auth.api.login { username = model.username, password = model.password } |> Cmd.map AuthMsg )
+            ( model, Auth.api.login {
+                username = model.username,
+                password = model.password } |> Cmd.map AuthMsg )
 
         RespondWithNewPassword ->
             case model.password of
@@ -125,10 +123,10 @@ updateInitialized action model =
                     ( model, Auth.api.requiredNewPassword newPassword |> Cmd.map AuthMsg )
 
         TryAgain ->
-            ( clear model, Auth.api.unauthed |> Cmd.map AuthMsg )
+            ( model, Auth.api.unauthed |> Cmd.map AuthMsg )
 
         LogOut ->
-            ( clear model, Auth.api.logout |> Cmd.map AuthMsg )
+            ( model, Auth.api.logout |> Cmd.map AuthMsg )
 
         Refresh ->
             ( model, Auth.api.refresh |> Cmd.map AuthMsg )
@@ -143,12 +141,6 @@ updateInitialized action model =
             ( { model | passwordVerify = str }, Cmd.none )
 
 
-clear : InitializedModel -> InitializedModel
-clear model =
-    { model | username = "", password = "", passwordVerify = "" }
-
-
-
 -- View
 
 
@@ -160,7 +152,6 @@ view model = {
 
 viewBody model = case model of
     Error errMsg -> errorView errMsg
-    Restoring initModel -> initialView
     Initialized initModel -> initializedView initModel
 
 
@@ -174,10 +165,6 @@ initializedView model =
         AuthAPI.LoggedIn state -> authenticatedView model state
         AuthAPI.Challenged Auth.NewPasswordRequired ->
             requiresNewPasswordView model
-
-
-initialView : Element Msg
-initialView = Element.text "Attempting to restore authentication using a local refresh token."
 
 
 loginView : InitializedModel -> Element Msg
@@ -202,24 +189,11 @@ loginView model = Element.column [] [
 notPermittedView : InitializedModel -> Element Msg
 notPermittedView model = Element.column [] [
     Element.text "Not Authorized",
-    Input.text [] {
-        onChange = UpdateUsername,
-        text = model.username,
-        placeholder = Nothing,
-        label = Input.labelLeft [] (Element.text "Username")
-    },
-    Input.currentPassword [] {
-        onChange = UpdatePassword,
-        text = model.password,
-        placeholder = Nothing,
-        label = Input.labelLeft [] (Element.text "Password"),
-        show = False
-    },
     Input.button [] {
         onPress = Just TryAgain,
-        label = Element.text "Try Again" }
+        label = Element.text "Try Again"
+        }
     ]
-
 
 authenticatedView : { a | username : String, auth : Auth.Model } -> { scopes : List String, subject : String } -> Element Msg
 authenticatedView model user = Element.column [] [
@@ -228,7 +202,9 @@ authenticatedView model user = Element.column [] [
     Element.text ("With Id:" ++ user.subject),
     Element.text ("With Permissions:" ++ Debug.toString user.scopes),
     case Auth.api.getAWSCredentials model.auth |> Debug.log "credentials" of
-        Just creds -> Element.text "With AWS access credentials."
+        Just creds ->
+            Element.text ("With AWS access credentials."
+                            ++ Debug.toString creds)
         Nothing -> Element.none,
     Input.button [] {
         onPress = Just LogOut,
